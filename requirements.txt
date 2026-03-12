@@ -1,0 +1,5 @@
+Django==4.2.29
+djangorestframework==3.16.1
+django-cors-headers==4.9.0
+torch==2.8.0
+requests>=2.31.0
