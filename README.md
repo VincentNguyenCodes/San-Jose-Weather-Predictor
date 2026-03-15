@@ -227,6 +227,79 @@ Each CSV in `data/` follows this schema:
 
 ---
 
+
+
+---
+
+## System Design at Scale
+
+The current implementation runs on a single server and retrains on every request. Here's how it would evolve to handle 100k+ users across multiple cities:
+
+### Bottleneck 1 — Single city, single model
+**Problem:** WeatherNet is trained on San Jose data only. Generalizing to more cities requires a new model per city — which doesn't scale.
+
+**Solution:**
+- Train a **shared global model** with city as an additional input feature (latitude, longitude, elevation, climate zone one-hot).
+- One model serves all cities; city-specific fine-tuning can be layered on top for higher accuracy.
+- Store per-city historical data in a structured data lake (S3 + Parquet) rather than flat CSVs.
+
+### Bottleneck 2 — No retraining pipeline
+**Problem:** New weather data arrives daily but the model is static. Predictions degrade as time passes without retraining.
+
+**Solution:**
+- Schedule a nightly **Celery + Redis** job that fetches yesterday's actuals from Open-Meteo, appends to the dataset, and retrains the model.
+- Version model weights with timestamps and keep the last 3 versions for rollback.
+- Compare new model MAE against the current deployed model before promoting — only deploy if it improves or holds steady.
+
+### Bottleneck 3 — No uncertainty quantification
+**Problem:** The model returns a single point prediction (e.g., 72°F) with no confidence interval. Real forecasting systems communicate uncertainty.
+
+**Solution:**
+- Replace the single MLP output with a **Monte Carlo Dropout** inference pass — run the same input through the model N times with dropout enabled, report the mean and standard deviation as a confidence range.
+- Surface this in the UI: "High: 72°F ± 4°F" instead of just "72°F."
+
+### Bottleneck 4 — Synchronous prediction on every request
+**Problem:** At high traffic, running inference on every API call blocks the server.
+
+**Solution:**
+- **Pre-compute and cache** the 7-day forecast once per day per city in Redis. Serve cached results instantly; only recompute when the cache expires or a new model is deployed.
+- For the arbitrary date prediction endpoint, inference is fast enough to stay synchronous but should be rate-limited per IP.
+
+### Revised architecture at scale
+
+```
+                         ┌──────────────────┐
+                         │  Open-Meteo API  │  ← nightly data fetch
+                         └────────┬─────────┘
+                                  │
+                         ┌────────▼─────────┐
+                         │  Celery Worker   │  ← retrains model nightly
+                         │  (retraining     │     versions weights to S3
+                         │   pipeline)      │
+                         └────────┬─────────┘
+                                  │
+┌──────────┐   HTTPS   ┌──────────▼─────────┐
+│  Client  │──────────▶│    NGINX / LB       │
+└──────────┘           └──────────┬──────────┘
+                                  │
+                    ┌─────────────┼─────────────┐
+                    ▼             ▼             ▼
+              ┌──────────┐ ┌──────────┐ ┌──────────┐
+              │ Django   │ │ Django   │ │ Django   │  ← Gunicorn workers
+              └────┬─────┘ └────┬─────┘ └────┬─────┘
+                   └────────────┼────────────┘
+                                │
+               ┌────────────────┼────────────────┐
+               ▼                ▼                ▼
+        ┌────────────┐  ┌────────────┐  ┌────────────┐
+        │ PostgreSQL │  │   Redis    │  │    S3      │
+        │ (city +    │  │ (forecast  │  │ (model     │
+        │  actuals)  │  │  cache)    │  │  weights)  │
+        └────────────┘  └────────────┘  └────────────┘
+```
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |
