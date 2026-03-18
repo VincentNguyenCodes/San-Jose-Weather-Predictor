@@ -59,31 +59,41 @@ def _get_model():
     return _model
 
 
-def _fetch_todays_weather():
+def _fetch_recent_actuals(past_days=7):
     """
-    Fetch today's actual high/low from Open-Meteo forecast API (free, no key).
-    Returns (tmax, tmin, precip) in °F or None if the request fails.
+    Fetch today + the last `past_days` days of actuals from Open-Meteo.
+    Returns {date: (tmax, tmin, precip)} in °F, or {} if the request fails.
+    Using past_days=7 gives the model real sequential data for all SEQ_DAYS
+    inputs regardless of whether update_actuals has been run.
     """
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={LAT}&longitude={LON}"
         f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
         f"&timezone=America%2FLos_Angeles"
+        f"&past_days={past_days}"
         f"&forecast_days=1"
         f"&temperature_unit=fahrenheit"
     )
     try:
         with urlopen(url, timeout=5) as resp:
             data = json.loads(resp.read())
-        daily = data.get('daily', {})
-        tmax   = daily.get('temperature_2m_max', [None])[0]
-        tmin   = daily.get('temperature_2m_min', [None])[0]
-        precip = daily.get('precipitation_sum',  [0.0])[0] or 0.0
-        if tmax is None or tmin is None:
-            return None
-        return round(tmax), round(tmin), round(precip, 2)
+        daily  = data.get('daily', {})
+        dates  = daily.get('time', [])
+        tmaxes = daily.get('temperature_2m_max', [])
+        tmins  = daily.get('temperature_2m_min', [])
+        precips = daily.get('precipitation_sum', [])
+        result = {}
+        for i, d_str in enumerate(dates):
+            tx = tmaxes[i] if i < len(tmaxes) else None
+            tn = tmins[i]  if i < len(tmins)  else None
+            pr = precips[i] if i < len(precips) else 0.0
+            if tx is None or tn is None:
+                continue
+            result[date.fromisoformat(d_str)] = (round(tx), round(tn), round(pr or 0.0, 2))
+        return result
     except (URLError, KeyError, IndexError, json.JSONDecodeError):
-        return None
+        return {}
 
 
 WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -188,11 +198,13 @@ def forecast(request):
             d = base + timedelta(days=doy - 1)
             predicted_cache[d] = entry
 
-    # Fetch today's real temperature from Open-Meteo — use as D-1 seed for model
-    todays_actual = _fetch_todays_weather()
+    # Fetch today + last 7 days of real actuals from Open-Meteo.
+    # These override CSV data so the model always uses real recent temps
+    # as sequential features, regardless of whether update_actuals has been run.
+    recent_actuals = _fetch_recent_actuals(past_days=SEQ_DAYS)
+    predicted_cache.update(recent_actuals)
+    todays_actual = recent_actuals.get(today)
     is_actual = todays_actual is not None
-    if is_actual:
-        predicted_cache[today] = todays_actual
 
     results = []
     for offset in range(8):  # today + 7 days
