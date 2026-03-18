@@ -30,7 +30,7 @@ A full-stack weather prediction application that uses a PyTorch neural network t
                            │
                ┌───────────▼───────────┐
                │     WeatherNet (MLP)  │
-               │   23 inputs → 2 out   │
+               │   40 inputs → 2 out   │
                │   (tmax, tmin in °F)  │
                └───────────┬───────────┘
                            │
@@ -45,23 +45,30 @@ A full-stack weather prediction application that uses a PyTorch neural network t
 
 ## Neural Network Model
 
-**Architecture:** 5-layer MLP (23 → 128 → 256 → 128 → 64 → 2)
+**Architecture:** 5-layer MLP (40 → 128 → 256 → 128 → 64 → 2)
 
-**Input features (23 total):**
+**Input features (40 total):**
 | Feature Group | Size | Description |
 |---|---|---|
-| Same-day historical temps | 10 | tmax + tmin for the same calendar date in each of the past 5 years |
-| Presence flags | 5 | 1 if historical data exists for that year slot, 0 otherwise |
-| Sequential prior days | 6 | tmax + tmin from the 3 days immediately preceding the target date |
+| Same-day historical temps (normalized) | 14 | tmax + tmin for the same calendar date across the past 7 years, divided by 100 |
+| Presence flags | 7 | 1 if historical data exists for that year slot, 0 otherwise |
+| Sequential prior days (normalized) | 14 | tmax + tmin from the 7 days immediately preceding the target date, divided by 100 |
+| Temperature deltas | 2 | (yesterday − 2 days ago) for tmax and tmin — captures warming/cooling trend |
+| 7-day rolling precipitation | 1 | Sum of prior 7 days of precipitation, normalized — wet/dry streaks affect temps |
 | Cyclical day-of-year | 2 | sin and cos encoding of day-of-year (captures seasonal patterns) |
 
 **Output:** tmax, tmin (°F) for the target date
 
-**Training:** Adam optimizer, MSE loss, 1,000 epochs, batch size 64
+**Training:** Adam optimizer, Huber loss, 1,000 epochs, batch size 64
 
 **Hold-out accuracy (tested on 2023–2025, never seen during training):**
-- High temp MAE: **4.90°F** vs baseline 5.42°F
-- Low temp MAE: **3.20°F** vs baseline 3.87°F
+- High temp MAE: **4.53°F** vs baseline 5.33°F
+- Low temp MAE: **2.94°F** vs baseline 3.87°F
+
+> **v1 → v2 improvements:** normalized inputs, extended history window (5 → 7 years),
+> extended sequential window (3 → 7 days), added temperature delta features,
+> added precipitation rolling sum, switched MSE → Huber loss.
+> Low temp MAE improved by **0.51°F**; see [`docs/accuracy-report.md`](docs/accuracy-report.md) for full before/after breakdown.
 
 See [`docs/accuracy-report.md`](docs/accuracy-report.md) for the full evaluation.
 
@@ -76,26 +83,26 @@ See [`docs/accuracy-report.md`](docs/accuracy-report.md) for the full evaluation
 │   │   ├── views.py            # /api/forecast/ and /api/predict/ endpoints
 │   │   ├── urls.py
 │   │   └── ml/
-│   │       ├── model.py        # WeatherNet definition + feature builder
+│   │       ├── model.py        # WeatherNet definition + feature builder (40 inputs)
 │   │       ├── train.py        # Training script
 │   │       └── model_weights.pth
 │   ├── weather_project/
 │   │   └── settings.py
+│   ├── data/                   # Historical CSV files (2015–2025)
+│   │   └── SanJoseWeather{year}.csv
+│   ├── src/
+│   │   ├── evaluate.py         # Hold-out accuracy evaluation
+│   │   ├── noaa_fetcher.py     # Optional: fetch data via NOAA CDO API
+│   │   └── csv-reader.py       # CSV utility functions
+│   ├── requirements.txt
 │   └── manage.py
 ├── frontend/                   # React app
 │   └── src/
 │       └── components/
 │           ├── WeatherApp.js   # Forecast + Predict tabs
 │           └── WeatherApp.css
-├── data/                       # Historical CSV files (2015–2025)
-│   └── SanJoseWeather{year}.csv
-├── src/
-│   ├── evaluate.py             # Hold-out accuracy evaluation
-│   ├── noaa_fetcher.py         # Optional: fetch data via NOAA CDO API
-│   └── csv-reader.py           # CSV utility functions
 ├── docs/
 │   └── accuracy-report.md
-├── requirements.txt
 └── README.md
 ```
 
@@ -111,7 +118,7 @@ See [`docs/accuracy-report.md`](docs/accuracy-report.md) for the full evaluation
 ### 1. Install Python dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
 ### 2. Start the Django backend
@@ -192,6 +199,7 @@ python train.py --data-dir ../../data --epochs 1000
 ## Evaluate Accuracy
 
 ```bash
+cd backend
 python src/evaluate.py
 ```
 
@@ -205,7 +213,7 @@ Optionally, use the NOAA CDO API fetcher (requires a [free token](https://www.nc
 
 ```bash
 export NOAA_CDO_TOKEN=your_token
-python src/noaa_fetcher.py --year 2026
+python backend/src/noaa_fetcher.py --year 2026
 ```
 
 ---

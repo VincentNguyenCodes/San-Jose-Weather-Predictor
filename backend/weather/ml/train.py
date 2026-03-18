@@ -2,11 +2,13 @@
 Train WeatherNet on historical San Jose weather data and save weights.
 
 Features per sample:
-  - Same-day temps (tmax, tmin) from up to 5 prior years   [10 values]
-  - Presence flags for each historical year slot            [ 5 values]
-  - Sequential temps from the 3 days immediately before    [ 6 values]
-  - Cyclical day-of-year encoding (sin, cos)               [ 2 values]
-  Total: 23 input features → 2 outputs (tmax, tmin)
+  - Same-day temps (tmax, tmin) from up to 7 prior years, normalized  [14 values]
+  - Presence flags for each historical year slot                       [ 7 values]
+  - Sequential temps from the 7 days immediately before, normalized   [14 values]
+  - Temperature deltas (tmax_delta, tmin_delta)                       [ 2 values]
+  - 7-day rolling precipitation sum, normalized                       [ 1 value ]
+  - Cyclical day-of-year encoding (sin, cos)                          [ 2 values]
+  Total: 40 input features → 2 outputs (tmax, tmin)
 
 Usage:
     python backend/weather/ml/train.py
@@ -24,12 +26,12 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from model import WeatherNet, build_features, HIST_YEARS, SEQ_DAYS
 
-DEFAULT_DATA_DIR  = Path(__file__).resolve().parents[3] / "data"
+DEFAULT_DATA_DIR  = Path(__file__).resolve().parents[2] / "data"
 DEFAULT_MODEL_OUT = Path(__file__).resolve().parent / "model_weights.pth"
 
 
 def load_data(data_dir: Path) -> dict:
-    """Return {year: {day_of_year: (tmax, tmin)}}"""
+    """Return {year: {day_of_year: (tmax, tmin, precip)}}"""
     all_data: dict = {}
     for csv_file in sorted(data_dir.glob("SanJoseWeather*.csv")):
         with open(csv_file, newline="") as f:
@@ -39,7 +41,8 @@ def load_data(data_dir: Path) -> dict:
                 tx, tn = row["tmax"], row["tmin"]
                 if tx == "" or tn == "":
                     continue
-                all_data.setdefault(yr, {})[doy] = (float(tx), float(tn))
+                precip = float(row["precip"]) if row.get("precip", "") != "" else 0.0
+                all_data.setdefault(yr, {})[doy] = (float(tx), float(tn), precip)
     return all_data
 
 
@@ -52,20 +55,25 @@ def build_dataset(all_data: dict):
             continue  # need at least one historical year
         past_years = years[:y_idx]
 
-        for doy, (tmax_t, tmin_t) in sorted(all_data[target_year].items()):
+        for doy, (tmax_t, tmin_t, _) in sorted(all_data[target_year].items()):
             same_day = [
-                all_data[py][doy]
+                (all_data[py][doy][0], all_data[py][doy][1])
                 for py in past_years[-HIST_YEARS:]
                 if doy in all_data.get(py, {})
             ]
             if not same_day:
                 continue
-            recent = [
-                all_data[target_year][doy - off]
-                for off in range(1, SEQ_DAYS + 1)
-                if (doy - off) >= 1 and (doy - off) in all_data[target_year]
-            ]
-            features.append(build_features(same_day, recent, doy).tolist())
+
+            recent = []
+            precip_seq = []
+            for off in range(1, SEQ_DAYS + 1):
+                prev_doy = doy - off
+                if prev_doy >= 1 and prev_doy in all_data[target_year]:
+                    tx, tn, pr = all_data[target_year][prev_doy]
+                    recent.append((tx, tn))
+                    precip_seq.append(pr)
+
+            features.append(build_features(same_day, recent, doy, precip_seq).tolist())
             targets.append([tmax_t, tmin_t])
 
     X = torch.tensor(features, dtype=torch.float32)
@@ -85,7 +93,7 @@ def train(data_dir: Path, output_path: Path, epochs: int, lr: float):
     loader  = DataLoader(TensorDataset(X, y), batch_size=64, shuffle=True)
     model   = WeatherNet()
     opt     = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.HuberLoss()
 
     print(f"Training for {epochs} epochs ...")
     for epoch in range(1, epochs + 1):

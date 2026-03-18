@@ -7,13 +7,12 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.conf import settings
 
-from .ml.model import WeatherNet, build_features
+from .ml.model import WeatherNet, build_features, SEQ_DAYS
 
-HIST_YEARS = 5
-SEQ_DAYS   = 3
+HIST_YEARS = 7
 
 _model    = None
-_all_data = None   # {year: {doy: (tmax, tmin)}}
+_all_data = None   # {year: {doy: (tmax, tmin, precip)}}
 
 
 def _load_data():
@@ -30,7 +29,8 @@ def _load_data():
                 tx, tn = row['tmax'], row['tmin']
                 if tx == '' or tn == '':
                     continue
-                _all_data.setdefault(yr, {})[doy] = (float(tx), float(tn))
+                precip = float(row['precip']) if row.get('precip', '') != '' else 0.0
+                _all_data.setdefault(yr, {})[doy] = (float(tx), float(tn), precip)
 
 
 def _get_model():
@@ -54,9 +54,7 @@ MONTHS   = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 def _predict_day(model, target_date, predicted_cache):
     """
     Predict tmax/tmin for target_date.
-    predicted_cache: {date: (tmax, tmin)} — filled in as we forecast forward.
-    Uses historical same-day from _all_data + recent sequential from _all_data
-    or predicted_cache for days not yet in CSV files.
+    predicted_cache: {date: (tmax, tmin, precip)} — filled in as we forecast forward.
     """
     _load_data()
     doy = target_date.timetuple().tm_yday
@@ -68,22 +66,27 @@ def _predict_day(model, target_date, predicted_cache):
         if past_yr >= yr:
             continue
         if doy in _all_data.get(past_yr, {}):
-            same_day.append(_all_data[past_yr][doy])
-    same_day = same_day[-HIST_YEARS:]  # keep only most recent 5
+            entry = _all_data[past_yr][doy]
+            same_day.append((entry[0], entry[1]))
+    same_day = same_day[-HIST_YEARS:]
 
     # Sequential: last SEQ_DAYS days before target_date
     recent = []
+    precip_seq = []
     for offset in range(1, SEQ_DAYS + 1):
         prev = target_date - timedelta(days=offset)
         prev_doy = prev.timetuple().tm_yday
         prev_yr  = prev.year
         if prev in predicted_cache:
-            recent.append(predicted_cache[prev])
+            entry = predicted_cache[prev]
+            recent.append((entry[0], entry[1]))
+            precip_seq.append(entry[2] if len(entry) > 2 else 0.0)
         elif prev_yr in _all_data and prev_doy in _all_data[prev_yr]:
-            recent.append(_all_data[prev_yr][prev_doy])
-        # else: leave as zero-padded (build_features handles it)
+            entry = _all_data[prev_yr][prev_doy]
+            recent.append((entry[0], entry[1]))
+            precip_seq.append(entry[2])
 
-    feats = build_features(same_day, recent, doy).unsqueeze(0)
+    feats = build_features(same_day, recent, doy, precip_seq).unsqueeze(0)
     with torch.no_grad():
         pred = _get_model()(feats).squeeze(0)
     return round(pred[0].item()), round(pred[1].item())
@@ -110,10 +113,10 @@ def predict(request):
     yr = target.year
     if yr in _all_data:
         base = date(yr, 1, 1)
-        for doy, (tx, tn) in _all_data[yr].items():
+        for doy, entry in _all_data[yr].items():
             d = base + timedelta(days=doy - 1)
             if d < target:
-                cache[d] = (tx, tn)
+                cache[d] = entry
 
     tmax, tmin = _predict_day(_get_model(), target, cache)
     doy = target.timetuple().tm_yday
@@ -142,21 +145,21 @@ def forecast(request):
     yr = today.year
     if yr in _all_data:
         base = date(yr, 1, 1)
-        for doy, (tx, tn) in _all_data[yr].items():
+        for doy, entry in _all_data[yr].items():
             d = base + timedelta(days=doy - 1)
-            predicted_cache[d] = (tx, tn)
+            predicted_cache[d] = entry
 
     results = []
     for offset in range(8):  # today + 7 days
         d = today + timedelta(days=offset)
         tmax, tmin = _predict_day(_get_model(), d, predicted_cache)
-        predicted_cache[d] = (tmax, tmin)
+        predicted_cache[d] = (tmax, tmin, 0.0)
 
         # Determine which past years' same-day data was used
         doy = d.timetuple().tm_yday
         hist_years_used = [
-            yr for yr in sorted(_all_data.keys())
-            if yr < d.year and doy in _all_data.get(yr, {})
+            y for y in sorted(_all_data.keys())
+            if y < d.year and doy in _all_data.get(y, {})
         ][-HIST_YEARS:]
 
         results.append({

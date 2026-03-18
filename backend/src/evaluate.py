@@ -18,18 +18,21 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 DATA_DIR   = Path(__file__).resolve().parents[1] / "data"
-MODEL_PATH = Path(__file__).resolve().parents[1] / "backend/weather/ml/model_weights.pth"
+MODEL_PATH = Path(__file__).resolve().parents[1] / "weather/ml/model_weights.pth"
 
-HIST_YEARS = 5
-SEQ_DAYS   = 3
-TEST_YEARS = [2023, 2024, 2025]
+HIST_YEARS  = 7
+SEQ_DAYS    = 7
+TEMP_SCALE  = 100.0
+PRECIP_SCALE = 5.0
+INPUT_SIZE  = 40
+TEST_YEARS  = [2023, 2024, 2025]
 TRAIN_YEARS = [y for y in range(2015, 2026) if y not in TEST_YEARS]
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_all():
-    """Return {year: {doy: (tmax, tmin)}}"""
+    """Return {year: {doy: (tmax, tmin, precip)}}"""
     all_data = {}
     for f in sorted(DATA_DIR.glob("SanJoseWeather*.csv")):
         with open(f, newline="") as fp:
@@ -39,27 +42,45 @@ def load_all():
                 tx, tn = row["tmax"], row["tmin"]
                 if tx == "" or tn == "":
                     continue
-                all_data.setdefault(yr, {})[doy] = (float(tx), float(tn))
+                precip = float(row["precip"]) if row.get("precip", "") != "" else 0.0
+                all_data.setdefault(yr, {})[doy] = (float(tx), float(tn), precip)
     return all_data
 
 
 # ── Feature builder ───────────────────────────────────────────────────────────
 
-def build_features(same_day_hist, recent_seq, doy):
+def build_features(same_day_hist, recent_seq, doy, precip_seq=()):
     hist_tx = [0.] * HIST_YEARS
     hist_tn = [0.] * HIST_YEARS
     flags   = [0.] * HIST_YEARS
     for i, (tx, tn) in enumerate(same_day_hist[-HIST_YEARS:]):
         slot = HIST_YEARS - len(same_day_hist) + i
-        hist_tx[slot] = tx; hist_tn[slot] = tn; flags[slot] = 1.
-    seq_tx = [0.] * SEQ_DAYS; seq_tn = [0.] * SEQ_DAYS
+        hist_tx[slot] = tx / TEMP_SCALE
+        hist_tn[slot] = tn / TEMP_SCALE
+        flags[slot] = 1.
+
+    seq_tx = [0.] * SEQ_DAYS
+    seq_tn = [0.] * SEQ_DAYS
     for i, (tx, tn) in enumerate(recent_seq[:SEQ_DAYS]):
-        seq_tx[i] = tx; seq_tn[i] = tn
+        seq_tx[i] = tx / TEMP_SCALE
+        seq_tn[i] = tn / TEMP_SCALE
+
+    if len(recent_seq) >= 2:
+        tmax_delta = (recent_seq[0][0] - recent_seq[1][0]) / TEMP_SCALE
+        tmin_delta = (recent_seq[0][1] - recent_seq[1][1]) / TEMP_SCALE
+    else:
+        tmax_delta = 0.0
+        tmin_delta = 0.0
+
+    rolling_precip = sum(float(p) for p in precip_seq[:SEQ_DAYS]) / PRECIP_SCALE
+
     angle = 2 * math.pi * doy / 365.
     vec = (
         [v for p in zip(hist_tx, hist_tn) for v in p]
         + flags
         + [v for p in zip(seq_tx, seq_tn) for v in p]
+        + [tmax_delta, tmin_delta]
+        + [rolling_precip]
         + [math.sin(angle), math.cos(angle)]
     )
     return vec
@@ -73,22 +94,27 @@ def make_dataset(all_data, use_years, target_years):
             continue
         past_years = [y for y in sorted(use_years) if y < target_year]
         for doy in sorted(all_data[target_year]):
-            tmax_t, tmin_t = all_data[target_year][doy]
+            tmax_t, tmin_t, _ = all_data[target_year][doy]
             same_day = [
-                all_data[py][doy]
+                (all_data[py][doy][0], all_data[py][doy][1])
                 for py in past_years[-HIST_YEARS:]
                 if doy in all_data.get(py, {})
             ]
             if not same_day:
                 continue
-            recent = [
-                all_data[target_year][doy - off]
-                for off in range(1, SEQ_DAYS + 1)
-                if (doy - off) >= 1 and (doy - off) in all_data[target_year]
-            ]
-            features.append(build_features(same_day, recent, doy))
+            recent = []
+            precip_seq = []
+            for off in range(1, SEQ_DAYS + 1):
+                prev_doy = doy - off
+                if prev_doy >= 1 and prev_doy in all_data[target_year]:
+                    tx, tn, pr = all_data[target_year][prev_doy]
+                    recent.append((tx, tn))
+                    precip_seq.append(pr)
+            features.append(build_features(same_day, recent, doy, precip_seq))
             targets.append([tmax_t, tmin_t])
-            meta.append((target_year, doy, same_day))
+            meta.append((target_year, doy, [(all_data[py][doy][0], all_data[py][doy][1])
+                                             for py in past_years[-HIST_YEARS:]
+                                             if doy in all_data.get(py, {})]))
     X = torch.tensor(features, dtype=torch.float32)
     y = torch.tensor(targets,  dtype=torch.float32)
     return X, y, meta
@@ -98,7 +124,7 @@ def make_dataset(all_data, use_years, target_years):
 
 def make_model():
     return nn.Sequential(
-        nn.Linear(23, 128), nn.ReLU(),
+        nn.Linear(INPUT_SIZE, 128), nn.ReLU(),
         nn.Linear(128, 256), nn.ReLU(),
         nn.Linear(256, 128), nn.ReLU(),
         nn.Linear(128, 64), nn.ReLU(),
@@ -110,7 +136,7 @@ def train_model(X, y, epochs=1000, lr=1e-3, verbose=False):
     model  = make_model()
     opt    = torch.optim.Adam(model.parameters(), lr=lr)
     loader = DataLoader(TensorDataset(X, y), batch_size=64, shuffle=True)
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.HuberLoss()
     for epoch in range(1, epochs + 1):
         total = 0.
         for xb, yb in loader:
