@@ -148,6 +148,32 @@ All top errors now fall on extreme heat events (October heatwaves and unusual Ju
 
 ---
 
+---
+
+## Live Data Pipeline (Post-v2)
+
+After the model improvements, a real-time data layer was added to eliminate two sources of compounding error:
+
+**Problem 1 — Today's prediction was model-generated**
+The forecast endpoint previously used the model to predict today's high/low, then used those predicted values as D-1 inputs for tomorrow's prediction, and so on. Each day's error compounded into the next.
+
+**Solution:** Today's high/low is now fetched live from the [Open-Meteo forecast API](https://open-meteo.com/) (free, no key required). The model only predicts days 1–6, all seeded with today's real observed temperatures.
+
+**Problem 2 — CSV data went stale**
+The historical CSVs were static snapshots. As the current year progressed, the model had no actual data for recent days and fell back to predicted values.
+
+**Solution:** A Django management command (`python manage.py update_actuals`) fetches confirmed actuals from the Open-Meteo archive API and writes them to the CSV. The views layer detects file changes via mtime and auto-reloads on the next request — no server restart needed.
+
+```bash
+# Run daily (or via cron)
+python manage.py update_actuals              # yesterday's actuals
+python manage.py update_actuals --date 2026-03-17  # specific date
+```
+
+The 2026 CSV was backfilled with real data from Jan 1 – Mar 17, 2026 using this pipeline.
+
+---
+
 ## How to Reproduce
 
 ```bash

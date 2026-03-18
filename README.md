@@ -6,7 +6,9 @@ A full-stack weather prediction application that uses a PyTorch neural network t
 
 ## Features
 
-- **7-day forecast** — predicted daily high/low temperatures starting from today
+- **Real-time today** — today's high/low is pulled live from the Open-Meteo API (no key required), not predicted
+- **6-day model forecast** — days 1–6 predicted by WeatherNet, seeded with today's real temps so no predictions build on predictions
+- **Daily actuals pipeline** — `python manage.py update_actuals` fetches yesterday's confirmed temps and writes them to the CSV, keeping training data current
 - **Date lookup** — predict the high/low for any date by typing it in
 - **Transparent predictions** — each forecast shows which historical years it was based on
 - **iOS-inspired UI** — glassmorphism weather card built in React
@@ -202,6 +204,26 @@ python train.py --data-dir ../../data --epochs 1000
 cd backend
 python src/evaluate.py
 ```
+
+## Update Daily Actuals
+
+Run this each day to append yesterday's confirmed temperatures to the CSV.
+The API auto-reloads data on next request — no server restart needed.
+
+```bash
+cd backend
+
+# Update yesterday (default)
+python manage.py update_actuals
+
+# Update a specific date
+python manage.py update_actuals --date 2026-03-17
+
+# Backfill a range
+python manage.py update_actuals --date 2026-01-01 --end-date 2026-03-15
+```
+
+> **Note:** Open-Meteo archive data has a 1–2 day delay, so running this for yesterday is reliable. Same-day actuals are fetched live by the forecast endpoint automatically.
 
 Trains a fresh hold-out model on 2015–2022, evaluates on 2023–2025, and prints MAE, RMSE, per-year breakdowns, worst predictions, and monthly error breakdown.
 
