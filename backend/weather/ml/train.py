@@ -99,7 +99,7 @@ def train(data_dir: Path, output_path: Path, report_path: Path, epochs: int, lr:
     val_loader   = DataLoader(TensorDataset(X_val, y_val),     batch_size=64, shuffle=False)
 
     model   = WeatherNet()
-    opt     = torch.optim.Adam(model.parameters(), lr=lr)
+    opt     = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn = nn.HuberLoss()
 
     history       = []
@@ -168,7 +168,8 @@ def train(data_dir: Path, output_path: Path, report_path: Path, epochs: int, lr:
         f.write(f"| Learning rate | {lr} |\n")
         f.write("| Batch size | 64 |\n")
         f.write("| Loss function | HuberLoss |\n")
-        f.write("| Optimizer | Adam |\n\n")
+        f.write("| Optimizer | Adam |\n")
+        f.write("| Weight decay | 1e-4 |\n\n")
 
         f.write("## Loss History\n\n")
         f.write("| Epoch | Train Loss | Val Loss |\n|---|---|---|\n")
