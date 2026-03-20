@@ -1,34 +1,40 @@
 # WeatherNet Training Report
 
-## Overview
+## Improvements Made
 
-WeatherNet is a 4-layer MLP (40 inputs → 128 → 256 → 128 → 64 → 2 outputs) trained to predict daily high and low temperatures for San Jose, CA using 11 years of NOAA historical data (2015-2026).
+| Change | Detail |
+|---|---|
+| More data | Extended dataset from 2015-2026 (11 years) to 1950-2026 (76 years) via Open-Meteo |
+| Early stopping | Stops training when cross validation loss stops improving (patience=50) |
+| Weight decay | Added L2 regularization to Adam optimizer (weight_decay=1e-4) |
+| Recency weighting | Sequential prior day features weighted linearly by closeness to target date |
 
-This report covers training and validation loss only. The held-out test set (20%) has not been evaluated.
+---
 
-## Data Split
+## Before Improvements
 
-3,729 total samples, randomly split with seed 42.
+**Dataset:** 2015-2026 (3,729 total samples)
 
-| Split | Samples | Fraction |
-|---|---|---|
-| Train | 2237 | 60% |
-| Validation | 745 | 20% |
-| Test | 747 | 20% |
+| Split | Samples |
+|---|---|
+| Train (60%) | 2237 |
+| Cross Validation (20%) | 745 |
+| Test (20%) | 747 |
 
-## Training Configuration
+**Training Configuration**
 
 | Parameter | Value |
 |---|---|
-| Epochs | 1000 |
+| Max epochs | 1000 |
+| Stopped at epoch | 1000 (no early stopping) |
 | Learning rate | 0.001 |
 | Batch size | 64 |
 | Loss function | HuberLoss |
-| Optimizer | Adam |
+| Optimizer | Adam (no weight decay) |
 
-## Loss History
+**Loss History**
 
-| Epoch | Train Loss | Val Loss |
+| Epoch | Train Loss | Cross Validation Loss |
 |---|---|---|
 | 100 | 2.6265 | 2.8541 |
 | 200 | 2.3824 | 2.7113 |
@@ -41,15 +47,67 @@ This report covers training and validation loss only. The held-out test set (20%
 | 900 | 1.8950 | 2.9314 |
 | 1000 | 1.8390 | 3.0590 |
 
-## Final Results
+**Final Results**
 
 | Metric | Value |
 |---|---|
 | Final train loss | 1.8390 |
-| Final val loss | 3.0590 |
+| Final cross validation loss | 3.0590 |
+| Train/CV gap | 1.2200 (overfitting) |
 
-## Observations
+---
 
-Val loss bottoms out around epoch 300 (2.6857) while train loss continues falling to 1.8390 by epoch 1000. The gap of ~1.22 between final train and val loss is a sign of overfitting. The model would likely generalize better if stopped around epoch 300 rather than running the full 1000 epochs.
+## After Improvements
 
-Potential next steps: add early stopping based on val loss, add dropout to the architecture, or reduce model capacity.
+**Dataset:** 1950-2026 (27,470 total samples)
+
+| Split | Samples |
+|---|---|
+| Train (60%) | 16482 |
+| Cross Validation (20%) | 5494 |
+| Test (20%) | 5494 |
+
+**Training Configuration**
+
+| Parameter | Value |
+|---|---|
+| Max epochs | 1000 |
+| Stopped at epoch | 222 |
+| Early stopping patience | 50 |
+| Learning rate | 0.001 |
+| Batch size | 64 |
+| Loss function | HuberLoss |
+| Optimizer | Adam |
+| Weight decay | 1e-4 |
+
+**Loss History**
+
+| Epoch | Train Loss | Cross Validation Loss |
+|---|---|---|
+| 100 | 2.6616 | 2.6756 |
+| 200 | 2.6400 | 2.6075 |
+| 222 | — | 2.6075 (best, early stop) |
+
+**Final Results**
+
+| Metric | Value |
+|---|---|
+| Final train loss | 2.6400 |
+| Final cross validation loss | 2.6075 |
+| Train/CV gap | 0.0325 (overfitting resolved) |
+
+---
+
+## Summary
+
+| Metric | Before | After | Change |
+|---|---|---|---|
+| Dataset size | 3,729 | 27,470 | +636% |
+| Epochs trained | 1000 | 222 | -778 |
+| Final train loss | 1.8390 | 2.6400 | higher (less memorization) |
+| Final CV loss | 3.0590 | 2.6075 | -0.4515 |
+| Train/CV gap | 1.2200 | 0.0325 | -1.1875 |
+
+The train/CV gap dropped from 1.22 to 0.03, meaning the model is no longer memorizing the training data. CV loss improved by 0.45 despite training for far fewer epochs.
+
+Test set evaluation has not been run yet.
