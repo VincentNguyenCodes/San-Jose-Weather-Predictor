@@ -71,6 +71,102 @@ MSE penalizes large errors quadratically, which causes the model to over-priorit
 **Historical years used:** 7
 **Sequential days used:** 7
 
+**Training data (2015-2026, 60/20/20 random split):**
+
+| Split | Samples |
+|---|---|
+| Train (60%) | 2237 |
+| Cross Validation (20%) | 745 |
+| Test (20%) | 747 |
+
+| Parameter | Value |
+|---|---|
+| Epochs | 1000 (no early stopping) |
+| Learning rate | 0.001 |
+| Optimizer | Adam (no weight decay) |
+| Loss function | HuberLoss |
+
+| Epoch | Train Loss | Cross Validation Loss |
+|---|---|---|
+| 100 | 2.6265 | 2.8541 |
+| 200 | 2.3824 | 2.7113 |
+| 300 | 2.4375 | 2.6857 |
+| 400 | 2.4017 | 2.7399 |
+| 500 | 2.1979 | 2.7589 |
+| 600 | 2.2036 | 2.8409 |
+| 700 | 2.0559 | 2.8138 |
+| 800 | 1.9963 | 2.8608 |
+| 900 | 1.8950 | 2.9314 |
+| 1000 | 1.8390 | 3.0590 |
+
+Final train loss: 1.8390 / Final CV loss: 3.0590 / Gap: 1.22 (overfitting)
+
+---
+
+### v3 — Overfitting Fixes
+
+**What changed and why:**
+
+**1. Extended dataset: 11 years → 76 years**
+Dataset expanded from 2015-2026 to 1950-2026 using the Open-Meteo historical archive API (free, no key required). Going from 3,729 to 27,470 samples is the single biggest factor in reducing overfitting — the model can no longer memorize the training set.
+
+**2. Early stopping**
+Training now monitors cross validation loss each epoch and stops when it hasn't improved for 50 consecutive epochs, saving the best weights. Previously the model trained for all 1000 epochs even after CV loss started climbing, causing the train/CV gap to widen to 1.22.
+
+**3. Weight decay (L2 regularization)**
+Added `weight_decay=1e-4` to the Adam optimizer. Penalizes large weights, discouraging the model from fitting noise in the training data.
+
+**4. Recency weighting on sequential features**
+Prior day temperatures are now weighted linearly by closeness to the target date. D-1 gets weight 1.0, D-2 gets 6/7, down to D-7 which gets 1/7. Same applied to the rolling precipitation sum. This makes the model more sensitive to recent weather momentum.
+
+**Updated input features (40 total):** same as v2 with recency weighting applied to sequential slots.
+
+**Training data (1950-2026, 60/20/20 random split):**
+
+| Split | Samples |
+|---|---|
+| Train (60%) | 16482 |
+| Cross Validation (20%) | 5494 |
+| Test (20%) | 5494 |
+
+| Parameter | Value |
+|---|---|
+| Max epochs | 1000 |
+| Stopped at epoch | 222 |
+| Early stopping patience | 50 |
+| Learning rate | 0.001 |
+| Batch size | 64 |
+| Loss function | HuberLoss |
+| Optimizer | Adam |
+| Weight decay | 1e-4 |
+
+| Epoch | Train Loss | Cross Validation Loss |
+|---|---|---|
+| 100 | 2.6616 | 2.6756 |
+| 200 | 2.6400 | 2.6075 |
+| 222 | — | 2.6075 (best, early stop) |
+
+Final train loss: 2.6400 / Final CV loss: 2.6075 / Gap: 0.03 (overfitting resolved)
+
+**Test Set Results (5,494 held-out samples):**
+
+| Metric | Value |
+|---|---|
+| MAE tmax | 3.65°F |
+| MAE tmin | 2.39°F |
+| RMSE tmax | 4.72°F |
+| RMSE tmin | 3.09°F |
+
+**Before vs. After Improvements:**
+
+| Metric | v2 | v3 | Change |
+|---|---|---|---|
+| Dataset size | 3,729 | 27,470 | +636% |
+| Epochs trained | 1000 | 222 | -778 |
+| Final train loss | 1.8390 | 2.6400 | higher (less memorization) |
+| Final CV loss | 3.0590 | 2.6075 | -0.4515 |
+| Train/CV gap | 1.2200 | 0.0325 | -1.1875 |
+
 ---
 
 ## Before vs. After — Hold-out Model (2015–2022 train → 2023–2025 test)
