@@ -80,7 +80,7 @@ def split_data(X, y, train_frac=0.6, val_frac=0.2, seed=42):
     )
 
 
-def train(data_dir: Path, output_path: Path, report_path: Path, epochs: int, lr: float):
+def train(data_dir: Path, output_path: Path, report_path: Path, epochs: int, lr: float, patience: int = 50):
     print(f"Loading data from {data_dir} ...")
     all_data = load_data(data_dir)
     years = sorted(all_data.keys())
@@ -102,8 +102,13 @@ def train(data_dir: Path, output_path: Path, report_path: Path, epochs: int, lr:
     opt     = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.HuberLoss()
 
-    history = []
-    print(f"Training for {epochs} epochs ...")
+    history       = []
+    best_val_loss = float('inf')
+    best_weights  = None
+    epochs_no_improve = 0
+    stopped_epoch = epochs
+
+    print(f"Training for up to {epochs} epochs (early stopping patience={patience})...")
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -117,19 +122,33 @@ def train(data_dir: Path, output_path: Path, report_path: Path, epochs: int, lr:
             train_loss += loss.item()
         train_loss /= len(train_loader)
 
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                val_loss += loss_fn(model(xb), yb).item()
+        val_loss /= len(val_loader)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_weights  = {k: v.clone() for k, v in model.state_dict().items()}
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
         if epoch % 100 == 0:
-            model.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for xb, yb in val_loader:
-                    val_loss += loss_fn(model(xb), yb).item()
-            val_loss /= len(val_loader)
             history.append((epoch, train_loss, val_loss))
             print(f"  Epoch {epoch:5d}  train={train_loss:.4f}  val={val_loss:.4f}")
 
+        if epochs_no_improve >= patience:
+            stopped_epoch = epoch
+            print(f"  Early stopping at epoch {epoch} (no val improvement for {patience} epochs)")
+            break
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    model.load_state_dict(best_weights)
     torch.save(model.state_dict(), output_path)
-    print(f"Saved model weights -> {output_path}")
+    print(f"Saved best model weights -> {output_path}")
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     with open(report_path, 'w') as f:
@@ -143,7 +162,9 @@ def train(data_dir: Path, output_path: Path, report_path: Path, epochs: int, lr:
 
         f.write("## Training Configuration\n\n")
         f.write("| Parameter | Value |\n|---|---|\n")
-        f.write(f"| Epochs | {epochs} |\n")
+        f.write(f"| Max epochs | {epochs} |\n")
+        f.write(f"| Stopped at epoch | {stopped_epoch} |\n")
+        f.write(f"| Early stopping patience | {patience} |\n")
         f.write(f"| Learning rate | {lr} |\n")
         f.write("| Batch size | 64 |\n")
         f.write("| Loss function | HuberLoss |\n")
@@ -170,6 +191,7 @@ if __name__ == "__main__":
     parser.add_argument("--output",   type=Path, default=DEFAULT_MODEL_OUT)
     parser.add_argument("--report",   type=Path, default=DEFAULT_REPORT_OUT)
     parser.add_argument("--epochs",   type=int,  default=1000)
+    parser.add_argument("--patience", type=int,  default=50)
     parser.add_argument("--lr",       type=float, default=1e-3)
     args = parser.parse_args()
-    train(args.data_dir, args.output, args.report, args.epochs, args.lr)
+    train(args.data_dir, args.output, args.report, args.epochs, args.lr, args.patience)
