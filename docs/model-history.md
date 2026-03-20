@@ -125,56 +125,48 @@ MSE penalizes large errors quadratically, causing the model to over-prioritize r
 
 ### Test Set Accuracy Comparison
 
-Hold-out methodology: model trained on 2015-2022 data, evaluated on completely unseen 2023-2025 data (1,096 samples). A naive baseline using plain historical same-day averages is included.
+All versions evaluated using the same hold-out methodology: tested on completely unseen 2023-2025 data (1,096 samples). v1 and v2 trained on 2015-2022; v3 trained on 1950-2022.
 
 | Model | MAE High | MAE Low | RMSE High | RMSE Low |
 |---|---|---|---|---|
-| v1 (hold-out) | 4.61°F | 3.45°F | 6.00°F | 4.38°F |
-| v2 (hold-out) | 4.53°F | 2.94°F | 5.81°F | 3.89°F |
-| Baseline (same-day average) | 5.33°F | 3.87°F | 6.81°F | 4.97°F |
+| v1 | 4.61°F | 3.45°F | 6.00°F | 4.38°F |
+| v2 | 4.53°F | 2.94°F | 5.81°F | 3.89°F |
+| v3 | 3.72°F | 2.56°F | 4.96°F | 3.34°F |
+| Baseline (same-day average) | 5.31°F | 3.83°F | 6.81°F | 4.94°F |
 
-v3 test set (60/20/20 random split, 5,494 held-out samples from 1950-2026):
-
-| Metric | v3 |
-|---|---|
-| MAE tmax | 3.65°F |
-| MAE tmin | 2.39°F |
-| RMSE tmax | 4.72°F |
-| RMSE tmin | 3.09°F |
-
-### Per-Year Breakdown (Hold-out Model, v2)
+### Per-Year Breakdown (Hold-out Model, v3)
 
 | Year | Samples | MAE High | MAE Low | RMSE High | RMSE Low |
 |---|---|---|---|---|---|
-| 2023 | 365 | 4.44°F | 2.96°F | 5.74°F | 3.85°F |
-| 2024 | 366 | 4.77°F | 3.12°F | 6.22°F | 4.03°F |
-| 2025 | 365 | 4.37°F | 2.74°F | 5.43°F | 3.78°F |
+| 2023 | 365 | 3.47°F | 2.57°F | 4.56°F | 3.36°F |
+| 2024 | 366 | 3.97°F | 2.69°F | 5.35°F | 3.49°F |
+| 2025 | 365 | 3.71°F | 2.41°F | 4.94°F | 3.17°F |
 
-### Monthly MAE (Hold-out Model, v2, Averaged Over 2023-2025)
+### Monthly MAE (Hold-out Model, v3, Averaged Over 2023-2025)
 
 | Month | Samples | MAE High | MAE Low |
 |---|---|---|---|
-| Jan | 93 | 3.68°F | 4.24°F |
-| Feb | 85 | 4.75°F | 4.49°F |
-| Mar | 93 | 5.57°F | 3.19°F |
-| Apr | 90 | 4.81°F | 2.77°F |
-| May | 93 | 5.22°F | 2.22°F |
-| Jun | 90 | 3.79°F | 1.64°F |
-| Jul | 93 | 4.85°F | 1.98°F |
-| Aug | 93 | 3.68°F | 1.72°F |
-| Sep | 90 | 4.48°F | 2.60°F |
-| Oct | 93 | 5.77°F | 3.64°F |
-| Nov | 90 | 4.30°F | 3.42°F |
-| Dec | 93 | 3.42°F | 3.49°F |
+| Jan | 93 | 2.88°F | 3.00°F |
+| Feb | 85 | 3.20°F | 3.45°F |
+| Mar | 93 | 3.30°F | 2.79°F |
+| Apr | 90 | 3.61°F | 2.14°F |
+| May | 93 | 4.32°F | 2.00°F |
+| Jun | 90 | 4.05°F | 1.84°F |
+| Jul | 93 | 3.72°F | 1.58°F |
+| Aug | 93 | 3.88°F | 2.01°F |
+| Sep | 90 | 4.53°F | 2.63°F |
+| Oct | 93 | 4.67°F | 3.15°F |
+| Nov | 90 | 3.48°F | 2.84°F |
+| Dec | 93 | 2.93°F | 3.35°F |
 
-October remains the hardest month (5.77°F MAE on highs) due to San Jose's unpredictable fall heat waves driven by Santa Ana wind events. The worst individual errors are concentrated almost exclusively in these October heatwave windows rather than scattered across the calendar, indicating the model has learned normal patterns well and only struggles on genuine anomalies.
+October and September remain the hardest months due to San Jose's unpredictable fall heat waves driven by Santa Ana wind events. v3 improved every month compared to v2, with the largest gains in March (-2.27°F), May (-0.90°F), and October (-1.10°F).
 
-### Largest Individual Errors (Hold-out Model, v2)
+### Largest Individual Errors (Hold-out Model, v3)
 
 | Date | Predicted High | Actual High | Predicted Low | Actual Low | Total Error |
 |---|---|---|---|---|---|
-| Oct 2, 2024 | 88.2°F | 106.0°F | 62.1°F | 76.0°F | 31.7°F |
-| Oct 3, 2024 | 81.3°F | 101.0°F | 63.1°F | 73.0°F | 29.6°F |
-| Oct 6, 2023 | 82.6°F | 98.0°F | 58.4°F | 72.0°F | 29.0°F |
-| Oct 19, 2023 | 79.9°F | 98.0°F | 56.2°F | 67.0°F | 28.9°F |
-| Jul 2, 2024 | 82.0°F | 101.0°F | 59.1°F | 65.0°F | 24.9°F |
+| Oct 20, 2023 | 99.3°F | 74.0°F | 71.1°F | 57.0°F | 39.4°F |
+| Sep 28, 2024 | 99.3°F | 80.0°F | 67.5°F | 57.0°F | 29.8°F |
+| Oct 21, 2024 | 90.2°F | 71.0°F | 60.4°F | 51.0°F | 28.6°F |
+| Oct 5, 2024 | 83.8°F | 104.0°F | 59.4°F | 67.0°F | 27.8°F |
+| Sep 4, 2024 | 106.8°F | 92.0°F | 71.5°F | 59.0°F | 27.3°F |

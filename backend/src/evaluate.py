@@ -1,14 +1,3 @@
-"""
-Accuracy evaluation for the WeatherNet model.
-
-Strategy: hold out the last 3 years (2023, 2024, 2025) as the test set.
-Train a fresh model on 2015-2022 only, then evaluate on each held-out year.
-Also evaluates the current saved model (trained on all years) for comparison.
-A naive "historical average" baseline is included for reference.
-
-Run: python src/evaluate.py
-"""
-
 import csv, math, sys
 from pathlib import Path
 from collections import defaultdict
@@ -17,22 +6,16 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "weather" / "ml"))
+from model import WeatherNet, build_features, HIST_YEARS, SEQ_DAYS
+
 DATA_DIR   = Path(__file__).resolve().parents[1] / "data"
 MODEL_PATH = Path(__file__).resolve().parents[1] / "weather/ml/model_weights.pth"
 
-HIST_YEARS  = 7
-SEQ_DAYS    = 7
-TEMP_SCALE  = 100.0
-PRECIP_SCALE = 5.0
-INPUT_SIZE  = 40
-TEST_YEARS  = [2023, 2024, 2025]
-TRAIN_YEARS = [y for y in range(2015, 2026) if y not in TEST_YEARS]
+TEST_YEARS = [2023, 2024, 2025]
 
-
-# ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_all():
-    """Return {year: {doy: (tmax, tmin, precip)}}"""
     all_data = {}
     for f in sorted(DATA_DIR.glob("SanJoseWeather*.csv")):
         with open(f, newline="") as fp:
@@ -47,47 +30,7 @@ def load_all():
     return all_data
 
 
-# ── Feature builder ───────────────────────────────────────────────────────────
-
-def build_features(same_day_hist, recent_seq, doy, precip_seq=()):
-    hist_tx = [0.] * HIST_YEARS
-    hist_tn = [0.] * HIST_YEARS
-    flags   = [0.] * HIST_YEARS
-    for i, (tx, tn) in enumerate(same_day_hist[-HIST_YEARS:]):
-        slot = HIST_YEARS - len(same_day_hist) + i
-        hist_tx[slot] = tx / TEMP_SCALE
-        hist_tn[slot] = tn / TEMP_SCALE
-        flags[slot] = 1.
-
-    seq_tx = [0.] * SEQ_DAYS
-    seq_tn = [0.] * SEQ_DAYS
-    for i, (tx, tn) in enumerate(recent_seq[:SEQ_DAYS]):
-        seq_tx[i] = tx / TEMP_SCALE
-        seq_tn[i] = tn / TEMP_SCALE
-
-    if len(recent_seq) >= 2:
-        tmax_delta = (recent_seq[0][0] - recent_seq[1][0]) / TEMP_SCALE
-        tmin_delta = (recent_seq[0][1] - recent_seq[1][1]) / TEMP_SCALE
-    else:
-        tmax_delta = 0.0
-        tmin_delta = 0.0
-
-    rolling_precip = sum(float(p) for p in precip_seq[:SEQ_DAYS]) / PRECIP_SCALE
-
-    angle = 2 * math.pi * doy / 365.
-    vec = (
-        [v for p in zip(hist_tx, hist_tn) for v in p]
-        + flags
-        + [v for p in zip(seq_tx, seq_tn) for v in p]
-        + [tmax_delta, tmin_delta]
-        + [rolling_precip]
-        + [math.sin(angle), math.cos(angle)]
-    )
-    return vec
-
-
 def make_dataset(all_data, use_years, target_years):
-    """Build (X, y, meta) for given target years, using use_years as history."""
     features, targets, meta = [], [], []
     for target_year in target_years:
         if target_year not in all_data:
@@ -110,7 +53,7 @@ def make_dataset(all_data, use_years, target_years):
                     tx, tn, pr = all_data[target_year][prev_doy]
                     recent.append((tx, tn))
                     precip_seq.append(pr)
-            features.append(build_features(same_day, recent, doy, precip_seq))
+            features.append(build_features(same_day, recent, doy, precip_seq).tolist())
             targets.append([tmax_t, tmin_t])
             meta.append((target_year, doy, [(all_data[py][doy][0], all_data[py][doy][1])
                                              for py in past_years[-HIST_YEARS:]
@@ -120,43 +63,50 @@ def make_dataset(all_data, use_years, target_years):
     return X, y, meta
 
 
-# ── Model ─────────────────────────────────────────────────────────────────────
-
-def make_model():
-    return nn.Sequential(
-        nn.Linear(INPUT_SIZE, 128), nn.ReLU(),
-        nn.Linear(128, 256), nn.ReLU(),
-        nn.Linear(256, 128), nn.ReLU(),
-        nn.Linear(128, 64), nn.ReLU(),
-        nn.Linear(64, 2),
-    )
-
-
-def train_model(X, y, epochs=1000, lr=1e-3, verbose=False):
-    model  = make_model()
-    opt    = torch.optim.Adam(model.parameters(), lr=lr)
-    loader = DataLoader(TensorDataset(X, y), batch_size=64, shuffle=True)
+def train_model(X, y, epochs=1000, lr=1e-3, patience=50, verbose=False):
+    model   = WeatherNet()
+    opt     = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     loss_fn = nn.HuberLoss()
+    loader  = DataLoader(TensorDataset(X, y), batch_size=64, shuffle=True)
+
+    best_loss    = float('inf')
+    best_weights = None
+    no_improve   = 0
+
     for epoch in range(1, epochs + 1):
+        model.train()
         total = 0.
         for xb, yb in loader:
             pred = model(xb)
             loss = loss_fn(pred, yb)
             opt.zero_grad(); loss.backward(); opt.step()
             total += loss.item()
-        if verbose and epoch % 200 == 0:
-            print(f"    epoch {epoch:4d}  loss={total/len(loader):.4f}")
+        avg = total / len(loader)
+
+        if avg < best_loss:
+            best_loss    = avg
+            best_weights = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve   = 0
+        else:
+            no_improve += 1
+
+        if verbose and epoch % 100 == 0:
+            print(f"    epoch {epoch:4d}  loss={avg:.4f}")
+
+        if no_improve >= patience:
+            if verbose:
+                print(f"    early stop at epoch {epoch}")
+            break
+
+    model.load_state_dict(best_weights)
     model.eval()
     return model
 
 
-# ── Metrics ───────────────────────────────────────────────────────────────────
-
 def metrics(preds, actuals):
-    """Returns (mae_tmax, mae_tmin, rmse_tmax, rmse_tmin)"""
     n = len(preds)
-    mae_tx = sum(abs(p[0] - a[0]) for p, a in zip(preds, actuals)) / n
-    mae_tn = sum(abs(p[1] - a[1]) for p, a in zip(preds, actuals)) / n
+    mae_tx  = sum(abs(p[0] - a[0]) for p, a in zip(preds, actuals)) / n
+    mae_tn  = sum(abs(p[1] - a[1]) for p, a in zip(preds, actuals)) / n
     rmse_tx = math.sqrt(sum((p[0]-a[0])**2 for p,a in zip(preds,actuals)) / n)
     rmse_tn = math.sqrt(sum((p[1]-a[1])**2 for p,a in zip(preds,actuals)) / n)
     return mae_tx, mae_tn, rmse_tx, rmse_tn
@@ -168,10 +118,7 @@ def predict_batch(model, X):
     return [(round(r[0].item(), 1), round(r[1].item(), 1)) for r in out]
 
 
-# ── Baseline: historical same-day average ─────────────────────────────────────
-
 def baseline_preds(meta):
-    """Average of past same-day temps (no neural net)."""
     preds = []
     for (yr, doy, same_day) in meta:
         avg_tx = sum(tx for tx, tn in same_day) / len(same_day)
@@ -179,8 +126,6 @@ def baseline_preds(meta):
         preds.append((avg_tx, avg_tn))
     return preds
 
-
-# ── Per-year breakdown ────────────────────────────────────────────────────────
 
 def per_year_metrics(preds, actuals, meta):
     by_year = defaultdict(lambda: {"preds": [], "actuals": []})
@@ -193,8 +138,6 @@ def per_year_metrics(preds, actuals, meta):
     return results
 
 
-# ── Worst predictions ─────────────────────────────────────────────────────────
-
 def worst_predictions(preds, actuals, meta, n=10):
     errors = []
     for pred, actual, (yr, doy, _) in zip(preds, actuals, meta):
@@ -202,8 +145,6 @@ def worst_predictions(preds, actuals, meta, n=10):
         errors.append((err, yr, doy, pred, actual))
     return sorted(errors, reverse=True)[:n]
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def divider(char="─", width=64):
     print(char * width)
@@ -213,52 +154,48 @@ def section(title):
     print(f"  {title}")
     divider()
 
+
 def main():
     all_data = load_all()
     years_available = sorted(all_data.keys())
-    print(f"\n  Data loaded: {years_available[0]}–{years_available[-1]}")
-    print(f"  Train years: {TRAIN_YEARS}")
+    train_years = [y for y in years_available if y not in TEST_YEARS]
+
+    print(f"\n  Data loaded: {years_available[0]}-{years_available[-1]}")
+    print(f"  Train years: {train_years[0]}-{train_years[-1]}")
     print(f"  Test years:  {TEST_YEARS}\n")
 
-    # ── 1. Build train and test sets ──────────────────────────────────────
-    all_years = list(range(2015, 2026))
-    X_train, y_train, _     = make_dataset(all_data, all_years, TRAIN_YEARS)
-    X_test,  y_test,  meta  = make_dataset(all_data, all_years, TEST_YEARS)
+    X_train, y_train, _    = make_dataset(all_data, train_years, train_years)
+    X_test,  y_test,  meta = make_dataset(all_data, train_years, TEST_YEARS)
     actuals = [(float(y[0]), float(y[1])) for y in y_test]
 
     print(f"  Training samples: {len(X_train)}")
     print(f"  Test samples:     {len(X_test)}\n")
 
-    # ── 2. Train a fresh hold-out model ──────────────────────────────────
-    section("Training hold-out model (2015–2022 only)")
-    holdout_model = train_model(X_train, y_train, epochs=1000, verbose=True)
+    section("Training hold-out model (1950-2022, v3 config)")
+    holdout_model = train_model(X_train, y_train, epochs=1000, patience=50, verbose=True)
 
-    # ── 3. Load the production model (trained on all years) ───────────────
-    prod_model = make_model()
+    prod_model = WeatherNet()
     prod_model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
     prod_model.eval()
 
-    # ── 4. Predictions ────────────────────────────────────────────────────
     preds_holdout = predict_batch(holdout_model, X_test)
     preds_prod    = predict_batch(prod_model,    X_test)
     preds_base    = baseline_preds(meta)
 
-    # ── 5. Overall metrics ────────────────────────────────────────────────
-    section("Overall accuracy on 2023–2025 test set")
-    header = f"  {'Model':<28}  {'MAE High':>8}  {'MAE Low':>8}  {'RMSE High':>10}  {'RMSE Low':>9}"
+    section("Overall accuracy on 2023-2025 test set")
+    header = f"  {'Model':<36}  {'MAE High':>8}  {'MAE Low':>8}  {'RMSE High':>10}  {'RMSE Low':>9}"
     print(header)
     divider("-")
 
     for label, preds in [
-        ("Hold-out model (2015–2022 train)", preds_holdout),
-        ("Production model (all years)",      preds_prod),
-        ("Baseline (same-day avg, no NN)",    preds_base),
+        ("Hold-out model (1950-2022 train, v3)", preds_holdout),
+        ("Production model (all years)",          preds_prod),
+        ("Baseline (same-day avg, no NN)",        preds_base),
     ]:
         mx, mn, rx, rn = metrics(preds, actuals)
-        print(f"  {label:<28}  {mx:>7.2f}°  {mn:>7.2f}°  {rx:>9.2f}°  {rn:>8.2f}°")
+        print(f"  {label:<36}  {mx:>7.2f}F  {mn:>7.2f}F  {rx:>9.2f}F  {rn:>8.2f}F")
 
-    # ── 6. Per-year breakdown (hold-out model) ────────────────────────────
-    section("Per-year breakdown — hold-out model")
+    section("Per-year breakdown - hold-out model")
     print(f"  {'Year':<6}  {'Samples':>7}  {'MAE High':>9}  {'MAE Low':>9}  {'RMSE High':>10}  {'RMSE Low':>9}")
     divider("-")
     by_year = per_year_metrics(preds_holdout, actuals, meta)
@@ -266,10 +203,9 @@ def main():
     for (yr, doy, _) in meta:
         by_year_counts[yr] += 1
     for yr, (mx, mn, rx, rn) in by_year.items():
-        print(f"  {yr:<6}  {by_year_counts[yr]:>7}  {mx:>8.2f}°  {mn:>8.2f}°  {rx:>9.2f}°  {rn:>8.2f}°")
+        print(f"  {yr:<6}  {by_year_counts[yr]:>7}  {mx:>8.2f}F  {mn:>8.2f}F  {rx:>9.2f}F  {rn:>8.2f}F")
 
-    # ── 7. Worst individual predictions ───────────────────────────────────
-    section("10 largest errors — hold-out model (tmax + tmin combined)")
+    section("10 largest errors - hold-out model")
     print(f"  {'Year':>4}  {'DOY':>4}  {'Pred High':>9}  {'Act High':>8}  {'Pred Low':>9}  {'Act Low':>8}  {'Total Err':>9}")
     divider("-")
     from datetime import date, timedelta
@@ -278,13 +214,12 @@ def main():
         date_str = d.strftime("%b %d")
         print(
             f"  {yr:>4}  {date_str:>6}  "
-            f"{pred[0]:>8.1f}°  {actual[0]:>7.1f}°  "
-            f"{pred[1]:>8.1f}°  {actual[1]:>7.1f}°  "
-            f"{err:>8.1f}°"
+            f"{pred[0]:>8.1f}F  {actual[0]:>7.1f}F  "
+            f"{pred[1]:>8.1f}F  {actual[1]:>7.1f}F  "
+            f"{err:>8.1f}F"
         )
 
-    # ── 8. Monthly MAE breakdown ──────────────────────────────────────────
-    section("Monthly MAE — hold-out model (averaged over 2023–2025)")
+    section("Monthly MAE - hold-out model (averaged over 2023-2025)")
     from datetime import date as dt, timedelta as td
     MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
     by_month = defaultdict(lambda: {"preds": [], "actuals": []})
@@ -299,7 +234,7 @@ def main():
             continue
         mx, mn, _, _ = metrics(by_month[m]["preds"], by_month[m]["actuals"])
         n = len(by_month[m]["preds"])
-        print(f"  {MONTHS[m-1]:<6}  {n:>7}  {mx:>8.2f}°  {mn:>8.2f}°")
+        print(f"  {MONTHS[m-1]:<6}  {n:>7}  {mx:>8.2f}F  {mn:>8.2f}F")
 
     divider()
     print()
