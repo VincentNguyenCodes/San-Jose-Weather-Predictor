@@ -1,6 +1,6 @@
 # San Jose Weather Predictor
 
-A full-stack weather prediction application that uses a PyTorch neural network trained on 12 years of historical San Jose, CA temperature data (2015–2026) to forecast high and low temperatures for the upcoming week and any arbitrary future date.
+A full-stack weather prediction application that uses a PyTorch neural network trained on 76 years of historical San Jose, CA temperature data (1950–2026) to forecast high and low temperatures for the upcoming week and any arbitrary future date.
 
 ---
 
@@ -38,7 +38,7 @@ A full-stack weather prediction application that uses a PyTorch neural network t
                            │
                ┌───────────▼───────────┐
                │   data/ (CSV files)   │
-               │   2015 – 2025         │
+               │   1950 – 2026         │
                │   San Jose, CA        │
                └───────────────────────┘
 ```
@@ -61,16 +61,15 @@ A full-stack weather prediction application that uses a PyTorch neural network t
 
 **Output:** tmax, tmin (°F) for the target date
 
-**Training:** Adam optimizer, Huber loss, 1,000 epochs, batch size 64
+**Training:** Adam optimizer (weight decay 1e-4), Huber loss, early stopping (patience 50), batch size 64
 
 **Hold-out accuracy (tested on 2023–2025, never seen during training):**
 - High temp MAE: **4.53°F** vs baseline 5.33°F
 - Low temp MAE: **2.94°F** vs baseline 3.87°F
 
-> **v1 → v2 improvements:** normalized inputs, extended history window (5 → 7 years),
-> extended sequential window (3 → 7 days), added temperature delta features,
-> added precipitation rolling sum, switched MSE → Huber loss.
-> Low temp MAE improved by **0.51°F**; see [`docs/accuracy-report.md`](docs/accuracy-report.md) for full before/after breakdown.
+> **v1 → v2:** normalized inputs, extended history window (5 → 7 years), extended sequential window (3 → 7 days), added temperature delta features, added precipitation rolling sum, switched MSE → Huber loss.
+> **v2 → v3:** expanded dataset from 11 to 76 years (1950–2026) via Open-Meteo, added early stopping, weight decay, and linear recency weighting on prior day features.
+> See [`docs/accuracy-report.md`](docs/accuracy-report.md) for full breakdown.
 
 See [`docs/accuracy-report.md`](docs/accuracy-report.md) for the full evaluation.
 
@@ -90,10 +89,11 @@ See [`docs/accuracy-report.md`](docs/accuracy-report.md) for the full evaluation
 │   │       └── model_weights.pth
 │   ├── weather_project/
 │   │   └── settings.py
-│   ├── data/                   # Historical CSV files (2015–2025)
+│   ├── data/                   # Historical CSV files (1950–2026)
 │   │   └── SanJoseWeather{year}.csv
 │   ├── src/
 │   │   ├── evaluate.py         # Hold-out accuracy evaluation
+│   │   ├── openmeteo_fetcher.py # Fetch historical data via Open-Meteo API
 │   │   ├── noaa_fetcher.py     # Optional: fetch data via NOAA CDO API
 │   │   └── csv-reader.py       # CSV utility functions
 │   ├── requirements.txt
