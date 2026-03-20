@@ -1,0 +1,180 @@
+# WeatherNet Model History
+
+---
+
+## v3 — Overfitting Fixes (Current)
+
+### What Changed from v2
+
+**1. Expanded dataset: 11 years to 76 years**
+Dataset expanded from 2015-2026 to 1950-2026 using the Open-Meteo historical archive API (free, no key required). Going from 3,729 to 27,470 samples is the single biggest factor in reducing overfitting. The model can no longer memorize the training set when the dataset is 7x larger.
+
+**2. Early stopping**
+Training now monitors cross validation loss each epoch and stops when it has not improved for 50 consecutive epochs, saving the best weights. Previously the model trained for all 1000 epochs even after CV loss started climbing, causing the train/CV gap to widen to 1.22. Stopped at epoch 222.
+
+**3. Weight decay (L2 regularization)**
+Added `weight_decay=1e-4` to the Adam optimizer. Penalizes large weights, discouraging the model from fitting noise in the training set.
+
+**4. Recency weighting on sequential features**
+Prior day temperatures are now weighted linearly by closeness to the target date. D-1 gets weight 1.0, D-2 gets 6/7, down to D-7 which gets 1/7. Same applied to the rolling precipitation sum. This makes the model more sensitive to recent weather momentum.
+
+### Architecture
+
+5-layer MLP: 40 inputs → 128 → 256 → 128 → 64 → 2 outputs (tmax, tmin in °F)
+
+### Input Features (40 total)
+
+| Feature Group | Size | Description |
+|---|---|---|
+| Same-day historical temps (normalized) | 14 | tmax + tmin for the same calendar date across the past 7 years, divided by 100 |
+| Presence flags | 7 | 1 if historical data exists for that year slot, 0 otherwise |
+| Sequential prior days (normalized) | 14 | tmax + tmin from the 7 days preceding the target date, divided by 100 with recency weighting |
+| Temperature deltas | 2 | (yesterday minus 2 days ago) for tmax and tmin, normalized |
+| 7-day rolling precipitation | 1 | Sum of prior 7 days of precipitation, normalized with recency weighting |
+| Cyclical day-of-year | 2 | sin/cos encoding of day-of-year |
+
+---
+
+## v2 — Improved Model
+
+### What Changed from v1
+
+**1. Input normalization**
+All temperature values are divided by 100 before being fed into the network. Previously, raw °F values (30-105) sat alongside cyclical sin/cos features clamped to [-1, 1]. This 100x scale difference caused the optimizer to over-weight temperature features while the cyclical seasonal signal was drowned out.
+
+**2. Extended historical years: 5 to 7**
+The original model only looked back 5 years on the same calendar date. Increasing to 7 gives the model more data points to estimate typical conditions for each day of year, reducing variance in the historical signal.
+
+**3. Extended sequential window: 3 to 7 days**
+Weather systems have momentum that extends beyond 3 days. A cold front, heat wave, or marine layer typically persists for a week or more. Extending the sequential window lets the model see the full arc of the current weather pattern.
+
+**4. Temperature delta features**
+Two new features: tmax_delta and tmin_delta, defined as yesterday's temperature minus the day before's temperature (normalized). This gives the model an explicit signal for whether temperatures are trending up or down.
+
+**5. Precipitation features**
+The CSV data includes daily precipitation but it was never used. A 7-day rolling precipitation sum (normalized) is now included. Wet stretches suppress high temps and moderate lows; dry spells allow temperatures to swing further. This particularly improved low temperature accuracy.
+
+**6. Huber loss (replaces MSE)**
+MSE penalizes large errors quadratically, causing the model to over-prioritize rare extreme events at the expense of normal-day accuracy. Huber loss behaves like MSE for small errors but clips large errors linearly, making the model more robust on typical days.
+
+### Architecture
+
+5-layer MLP: 40 inputs → 128 → 256 → 128 → 64 → 2 outputs (tmax, tmin in °F)
+
+### Input Features (40 total)
+
+| Feature Group | Size | Description |
+|---|---|---|
+| Same-day historical temps (normalized) | 14 | tmax + tmin for the same calendar date across the past 7 years, divided by 100 |
+| Presence flags | 7 | 1 if historical data exists for that year slot, 0 otherwise |
+| Sequential prior days (normalized) | 14 | tmax + tmin from the 7 days preceding the target date, divided by 100 |
+| Temperature deltas | 2 | (yesterday minus 2 days ago) for tmax and tmin, normalized |
+| 7-day rolling precipitation | 1 | Sum of prior 7 days of precipitation, normalized |
+| Cyclical day-of-year | 2 | sin/cos encoding of day-of-year |
+
+---
+
+## v1 — Original Model
+
+### Architecture
+
+5-layer MLP: 23 inputs → 128 → 256 → 128 → 64 → 2 outputs (tmax, tmin in °F)
+
+### Input Features (23 total)
+
+| Feature Group | Size | Description |
+|---|---|---|
+| Same-day historical temps | 10 | Raw tmax + tmin for the same calendar date across the past 5 years |
+| Presence flags | 5 | 1 if historical data exists for that year slot, 0 otherwise |
+| Sequential prior days | 6 | tmax + tmin from the 3 days immediately preceding the target date |
+| Cyclical day-of-year | 2 | sin/cos encoding of day-of-year |
+
+### Known Weaknesses
+- Raw °F values (30-105) mixed with normalized sin/cos features (-1 to 1), large input scale imbalance
+- Only 3 prior days of context, too short to capture weather momentum
+- Only 5 years of same-day history
+- Precipitation data available in CSVs but completely ignored
+- No trend signal, model could not tell if temperatures were rising or falling
+
+---
+
+## Data Tables
+
+### Training Configuration Comparison
+
+| Parameter | v1 | v2 | v3 |
+|---|---|---|---|
+| Dataset | 2015-2025 | 2015-2026 | 1950-2026 |
+| Samples | ~2,700 | 3,729 | 27,470 |
+| Loss function | MSE | HuberLoss | HuberLoss |
+| Optimizer | Adam | Adam | Adam (weight_decay=1e-4) |
+| Early stopping | No | No | Yes (patience=50, stopped epoch 222) |
+| Historical years | 5 | 7 | 7 |
+| Sequential days | 3 | 7 | 7 (recency weighted) |
+| Input features | 23 | 40 | 40 |
+
+### Overfitting Comparison (Train/CV Gap)
+
+| Metric | v2 | v3 | Change |
+|---|---|---|---|
+| Dataset size | 3,729 | 27,470 | +636% |
+| Epochs trained | 1000 | 222 | -778 |
+| Final train loss | 1.8390 | 2.6400 | higher (less memorization) |
+| Final CV loss | 3.0590 | 2.6075 | -0.4515 |
+| Train/CV gap | 1.2200 | 0.0325 | -1.1875 |
+
+### Test Set Accuracy Comparison
+
+Hold-out methodology: model trained on 2015-2022 data, evaluated on completely unseen 2023-2025 data (1,096 samples). A naive baseline using plain historical same-day averages is included.
+
+| Model | MAE High | MAE Low | RMSE High | RMSE Low |
+|---|---|---|---|---|
+| v1 (hold-out) | 4.61°F | 3.45°F | 6.00°F | 4.38°F |
+| v2 (hold-out) | 4.53°F | 2.94°F | 5.81°F | 3.89°F |
+| Baseline (same-day average) | 5.33°F | 3.87°F | 6.81°F | 4.97°F |
+
+v3 test set (60/20/20 random split, 5,494 held-out samples from 1950-2026):
+
+| Metric | v3 |
+|---|---|
+| MAE tmax | 3.65°F |
+| MAE tmin | 2.39°F |
+| RMSE tmax | 4.72°F |
+| RMSE tmin | 3.09°F |
+
+### Per-Year Breakdown (Hold-out Model, v2)
+
+| Year | Samples | MAE High | MAE Low | RMSE High | RMSE Low |
+|---|---|---|---|---|---|
+| 2023 | 365 | 4.44°F | 2.96°F | 5.74°F | 3.85°F |
+| 2024 | 366 | 4.77°F | 3.12°F | 6.22°F | 4.03°F |
+| 2025 | 365 | 4.37°F | 2.74°F | 5.43°F | 3.78°F |
+
+### Monthly MAE (Hold-out Model, v2, Averaged Over 2023-2025)
+
+| Month | Samples | MAE High | MAE Low |
+|---|---|---|---|
+| Jan | 93 | 3.68°F | 4.24°F |
+| Feb | 85 | 4.75°F | 4.49°F |
+| Mar | 93 | 5.57°F | 3.19°F |
+| Apr | 90 | 4.81°F | 2.77°F |
+| May | 93 | 5.22°F | 2.22°F |
+| Jun | 90 | 3.79°F | 1.64°F |
+| Jul | 93 | 4.85°F | 1.98°F |
+| Aug | 93 | 3.68°F | 1.72°F |
+| Sep | 90 | 4.48°F | 2.60°F |
+| Oct | 93 | 5.77°F | 3.64°F |
+| Nov | 90 | 4.30°F | 3.42°F |
+| Dec | 93 | 3.42°F | 3.49°F |
+
+October remains the hardest month (5.77°F MAE on highs) due to San Jose's unpredictable fall heat waves driven by Santa Ana wind events. The worst individual errors are concentrated almost exclusively in these October heatwave windows rather than scattered across the calendar, indicating the model has learned normal patterns well and only struggles on genuine anomalies.
+
+### Largest Individual Errors (Hold-out Model, v2)
+
+| Date | Predicted High | Actual High | Predicted Low | Actual Low | Total Error |
+|---|---|---|---|---|---|
+| Oct 2, 2024 | 88.2°F | 106.0°F | 62.1°F | 76.0°F | 31.7°F |
+| Oct 3, 2024 | 81.3°F | 101.0°F | 63.1°F | 73.0°F | 29.6°F |
+| Oct 6, 2023 | 82.6°F | 98.0°F | 58.4°F | 72.0°F | 29.0°F |
+| Oct 19, 2023 | 79.9°F | 98.0°F | 56.2°F | 67.0°F | 28.9°F |
+| Jul 2, 2024 | 82.0°F | 101.0°F | 59.1°F | 65.0°F | 24.9°F |

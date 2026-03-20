@@ -54,24 +54,21 @@ A full-stack weather prediction application that uses a PyTorch neural network t
 |---|---|---|
 | Same-day historical temps (normalized) | 14 | tmax + tmin for the same calendar date across the past 7 years, divided by 100 |
 | Presence flags | 7 | 1 if historical data exists for that year slot, 0 otherwise |
-| Sequential prior days (normalized) | 14 | tmax + tmin from the 7 days immediately preceding the target date, divided by 100 |
-| Temperature deltas | 2 | (yesterday − 2 days ago) for tmax and tmin; captures the warming/cooling trend |
-| 7-day rolling precipitation | 1 | Sum of prior 7 days of precipitation, normalized; wet/dry streaks affect temps |
-| Cyclical day-of-year | 2 | sin and cos encoding of day-of-year (captures seasonal patterns) |
+| Sequential prior days (normalized) | 14 | tmax + tmin from the 7 days immediately preceding the target date, divided by 100 with linear recency weighting |
+| Temperature deltas | 2 | (yesterday minus 2 days ago) for tmax and tmin, normalized |
+| 7-day rolling precipitation | 1 | Sum of prior 7 days of precipitation, normalized with recency weighting |
+| Cyclical day-of-year | 2 | sin and cos encoding of day-of-year |
 
 **Output:** tmax, tmin (°F) for the target date
 
-**Training:** Adam optimizer (weight decay 1e-4), Huber loss, early stopping (patience 50), batch size 64
+**Training:** Adam optimizer (weight decay 1e-4), Huber loss, early stopping (patience 50), batch size 64, trained on 76 years of data (1950-2026)
 
-**Hold-out accuracy (tested on 2023–2025, never seen during training):**
-- High temp MAE: **4.53°F** vs baseline 5.33°F
-- Low temp MAE: **2.94°F** vs baseline 3.87°F
+**Accuracy:**
+- MAE High: **3.65°F** | MAE Low: **2.39°F** (test set, 5,494 samples)
+- Hold-out MAE High: **4.53°F** vs baseline 5.33°F
+- Hold-out MAE Low: **2.94°F** vs baseline 3.87°F
 
-> **v1 → v2:** normalized inputs, extended history window (5 → 7 years), extended sequential window (3 → 7 days), added temperature delta features, added precipitation rolling sum, switched MSE → Huber loss.
-> **v2 → v3:** expanded dataset from 11 to 76 years (1950–2026) via Open-Meteo, added early stopping, weight decay, and linear recency weighting on prior day features.
-> See [`docs/accuracy-report.md`](docs/accuracy-report.md) for full breakdown.
-
-See [`docs/accuracy-report.md`](docs/accuracy-report.md) for the full evaluation.
+See [`docs/model-history.md`](docs/model-history.md) for full model history and version comparisons.
 
 ---
 
