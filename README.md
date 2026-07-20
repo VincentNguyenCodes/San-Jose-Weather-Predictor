@@ -137,7 +137,7 @@ npm install
 npm start
 ```
 
-App will open at `http://localhost:3000`
+App will open at `http://localhost:5173`
 
 ---
 

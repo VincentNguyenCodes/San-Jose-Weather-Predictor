@@ -55,7 +55,7 @@ function ForecastTab() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8001/api/forecast/')
+    fetch('http://127.0.0.1:8000/api/forecast/')
       .then(r => r.json())
       .then(json => { setData(json); setLoading(false); })
       .catch(() => { setError('Could not connect to the weather server.'); setLoading(false); });
@@ -121,7 +121,7 @@ function PredictTab() {
     setResult(null);
     setError(null);
 
-    fetch(`http://127.0.0.1:8001/api/predict/?date=${inputDate}`)
+    fetch(`http://127.0.0.1:8000/api/predict/?date=${inputDate}`)
       .then(r => r.json())
       .then(json => {
         if (json.error) { setError(json.error); }
